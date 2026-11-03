@@ -120,6 +120,14 @@ def entity_statistics(df: pd.DataFrame, query: str) -> list[KBEntry]:
         f"Share of all sales: {sub['Sales'].sum() / df['Sales'].sum() * 100:.2f}%",
         {"filters": label},
     ))
+    for dim in ("Product", "Region"):          # e.g. "best product IN the West" -> products within West only
+        if dim not in filters:
+            br = sub.groupby(dim).agg(Total_Sales=("Sales", "sum"), Avg_Sale=("Sales", "mean"),
+                                      Transactions=("Sales", "count"),
+                                      Avg_Satisfaction=("Customer_Satisfaction", "mean")).round(2)
+            br[f"Share_within_filter_%"] = (br["Total_Sales"] / br["Total_Sales"].sum() * 100).round(2)
+            out.append(KBEntry("filtered", f"Sales by {dim} within {label}",
+                               br.sort_values("Total_Sales", ascending=False).to_string()))
     if len(filters) == 1 and "Year" not in filters:
         out.append(KBEntry("filtered", f"Yearly trend for {label}",
                            sub.groupby("Year")["Sales"].agg(["sum", "mean", "count"]).round(2).to_string()))

@@ -15,6 +15,7 @@ Pipeline for every question (3 chained prompts):
 """
 from __future__ import annotations
 
+import re
 from typing import Any, Optional
 
 import pandas as pd
@@ -111,9 +112,27 @@ SYSTEM_ROLE = (
     "You are InsightForge, a senior business intelligence analyst for a small-to-mid-size company. "
     "You only use numbers that appear in the DATA STATISTICS section of the context. Never invent figures. "
     "RESEARCH EXCERPTS are general findings from published papers: use them only to support or explain "
-    "recommendations, cite them by source name, and never treat their numbers as the company's data. "
+    "recommendations, and never treat their numbers as the company's data. "
+    "CITATION RULE: you may only cite documents from the 'Allowed sources' list, using that exact name "
+    "(e.g. 'Source: BI approaches, p. 3'). Never cite authors, papers or studies that are not on that list "
+    "(no 'Smith et al.', no invented study titles). If the list is NONE, do not cite or mention any research. "
     "If the context does not contain the answer, say what is missing."
 )
+
+
+def allowed_sources(docs: list[Document]) -> list[str]:
+    return sorted({d.metadata["title"].split(" (p.")[0] for d in docs if d.metadata.get("topic") == "research"})
+
+
+_CITATION = re.compile(r"\s*\((?:source:\s*)?[^()]*?(?:et al\.?|&|\bstudy\b|\bresearch\b|\bsource:)[^()]*\)",
+                       re.IGNORECASE)
+
+
+def strip_unverified_citations(text: str, sources: list[str]) -> str:
+    """Guardrail: remove parenthetical citations that don't name one of the retrieved research documents."""
+    def keep(m: re.Match) -> str:
+        return m.group(0) if any(s.lower()[:25] in m.group(0).lower() for s in sources) else ""
+    return _CITATION.sub(keep, text)
 
 CONDENSE_PROMPT = ChatPromptTemplate.from_messages([
     ("system", "Rewrite the user's latest question as a standalone question about the sales data, "
@@ -131,8 +150,10 @@ ANALYSIS_PROMPT = ChatPromptTemplate.from_messages([
      "Step 1 — extract ONLY the facts needed to answer the question. "
      "List them as short bullet points with exact numbers, and note any comparisons "
      "(highest/lowest, % differences, trends). If years are marked as partial, compare them using "
-     "average daily sales, not totals. If research excerpts are relevant, add a separate "
-     "'Research:' list of 1-3 findings with their source. Do not give recommendations yet."),
+     "average daily sales, not totals, and ignore growth figures for incomplete months or quarters. "
+     "Use the most specific table available (e.g. a breakdown within a region rather than company-wide totals). "
+     "If research excerpts are present and relevant, add a separate 'Research:' list of 1-3 findings, each "
+     "labelled with the exact source name and page shown in the excerpt heading. Do not give recommendations yet."),
 ])
 
 INSIGHT_PROMPT = ChatPromptTemplate.from_messages([
@@ -141,10 +162,11 @@ INSIGHT_PROMPT = ChatPromptTemplate.from_messages([
     MessagesPlaceholder("history"),
     ("human",
      "Question: {question}\n\nVerified facts from the data:\n{facts}\n\n"
+     "Allowed sources: {sources}\n\n"
      "Step 2 — answer the question using these facts. Structure:\n"
      "**Answer:** a direct 1-3 sentence answer with the key numbers.\n"
      "**Insights:** 2-3 bullets on what the numbers mean (patterns, trends, outliers).\n"
-     "**Recommendations:** 2-3 concrete, data-backed actions (cite a research source where one supports it).\n"
+     "**Recommendations:** 2-3 concrete, data-backed actions (cite an allowed source only where it genuinely supports the action).\n"
      "Keep it under 250 words."),
 ])
 
@@ -180,7 +202,10 @@ class InsightForgeAssistant:
         docs = self.retriever.invoke(standalone)
         context = format_docs(docs)
         facts = self.analysis_chain.invoke({"context": context, "question": standalone})
-        answer = self.insight_chain.invoke({"history": history, "question": question, "facts": facts})
+        sources = allowed_sources(docs)
+        answer = self.insight_chain.invoke({"history": history, "question": question, "facts": facts,
+                                            "sources": ", ".join(sources) or "NONE"})
+        answer = strip_unverified_citations(answer, sources)
 
         self.memory.add_user_message(question)
         self.memory.add_ai_message(answer)
@@ -197,7 +222,10 @@ class InsightForgeAssistant:
         """Stateless answer (no memory) — used for evaluation so tests don't leak into each other."""
         docs = self.retriever.invoke(question)
         facts = self.analysis_chain.invoke({"context": format_docs(docs), "question": question})
-        return self.insight_chain.invoke({"history": [], "question": question, "facts": facts})
+        sources = allowed_sources(docs)
+        answer = self.insight_chain.invoke({"history": [], "question": question, "facts": facts,
+                                            "sources": ", ".join(sources) or "NONE"})
+        return strip_unverified_citations(answer, sources)
 
     def clear_memory(self):
         self.memory.clear()

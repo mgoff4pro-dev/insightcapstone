@@ -66,6 +66,14 @@ def sales_by_time(df: pd.DataFrame, period: str = "Month") -> pd.DataFrame:
     """1. Sales performance by time period (Year / Quarter / Month)."""
     out = _agg(df, period)
     out["Growth_%"] = (out["Total_Sales"].pct_change() * 100).round(2)
+    if period in ("Month", "Quarter"):
+        # a period only partly covered by the data (e.g. Nov 1-4, 2028) would look like a sales crash
+        lo, hi = df["Date"].min().normalize(), df["Date"].max().normalize()
+        freq = "M" if period == "Month" else "Q"
+        complete = [pd.Period(p, freq=freq).start_time >= lo and pd.Period(p, freq=freq).end_time.normalize() <= hi
+                    for p in out.index]
+        out["Complete_Period"] = complete
+        out.loc[~out["Complete_Period"], "Growth_%"] = float("nan")
     if period == "Year":
         days = df.groupby("Year")["Date"].agg(lambda d: (d.max() - d.min()).days + 1)
         out["Days_Covered"] = days
