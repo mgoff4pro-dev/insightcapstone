@@ -1,0 +1,13 @@
+pandas>=2.0
+numpy
+matplotlib>=3.7
+seaborn>=0.13
+langchain>=0.3
+langchain-core>=0.3
+langchain-openai>=0.2
+langchain-community>=0.3
+langchain-classic        # QAEvalChain lives here in LangChain 1.x (ignored safely on 0.3)
+faiss-cpu
+pypdf
+streamlit>=1.35
+jupyter
